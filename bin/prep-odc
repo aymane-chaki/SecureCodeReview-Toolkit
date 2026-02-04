@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WRAPPER_PATH="$(readlink -f "$0")"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$WRAPPER_PATH")" && pwd)"
+REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
+PY="${PYTHON:-python3}"
+if [ -x "${REPO_DIR}/.venv/bin/python" ]; then
+  PY="${REPO_DIR}/.venv/bin/python"
+fi
+
+exec "${PY}" "${REPO_DIR}/prep-odc.py" "$@"
