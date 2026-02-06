@@ -65,10 +65,7 @@ def get_terminal_width():
 
 
 def shorten_left(text, max_len):
-    """
-    Keep the end of long paths (usually more useful), trim from the left.
-    Example: ".../deep/path/file.js"
-    """
+    """Keep the end of long paths, trim from the left."""
     t = str(text or "")
     if max_len <= 0:
         return ""
@@ -77,6 +74,131 @@ def shorten_left(text, max_len):
     if max_len <= 3:
         return t[:max_len]
     return "..." + t[-(max_len - 3):]
+
+
+def print_section_header(title):
+    print(f"{COLOR_YELLOW}[+] {title}{COLOR_RESET}")
+
+
+def _as_list(v):
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return v
+    return [v]
+
+
+def _join_list(values):
+    vals = [str(x) for x in _as_list(values) if str(x).strip()]
+    return ", ".join(vals)
+
+
+def print_rule_docs(data, rule_substring):
+    """
+    Print full rule descriptions (from the JSON results) for all rules whose check_id
+    contains the provided substring.
+    """
+    needle = str(rule_substring or "").strip()
+    if not needle:
+        print(f"{COLOR_RED}[!] --rule-doc needs a non-empty value{COLOR_RESET}")
+        return 2
+
+    rules = {}
+    for finding in data.get("results", []):
+        check_id = str(finding.get("check_id", "") or "")
+        if needle not in check_id:
+            continue
+
+        extra = finding.get("extra", {}) or {}
+        metadata = extra.get("metadata", {}) or {}
+
+        if check_id not in rules:
+            rules[check_id] = {
+                "message": str(extra.get("message", "") or ""),
+                "severity": str(extra.get("severity", "") or ""),
+                "cwe": metadata.get("cwe", []),
+                "owasp": metadata.get("owasp", []),
+                "category": metadata.get("category", ""),
+                "technology": metadata.get("technology", []),
+                "likelihood": metadata.get("likelihood", ""),
+                "impact": metadata.get("impact", ""),
+                "confidence": metadata.get("confidence", ""),
+                "vuln_class": metadata.get("vulnerability_class", []),
+                "source": metadata.get("source", ""),
+                "shortlink": metadata.get("shortlink", ""),
+                "references": metadata.get("references", []),
+            }
+
+    if not rules:
+        print(f"{COLOR_YELLOW}[!] No rules matched substring: {needle}{COLOR_RESET}")
+        return 0
+
+    print_section_header(f"Rule descriptions ({len(rules)}):")
+
+    for check_id in sorted(rules.keys()):
+        r = rules[check_id]
+
+        header = f"{COLOR_MAGENTA}{COLOR_BOLD}{check_id}{COLOR_RESET}"
+        print(header)
+
+        if r["severity"]:
+            sev_label, sev_color = resolve_severity(r["severity"])
+            print(f"Severity: {sev_color}{COLOR_BOLD}{sev_label}{COLOR_RESET}")
+
+        if r["message"]:
+            print("")
+            print(r["message"])
+
+        lines = []
+
+        cwe = _join_list(r["cwe"])
+        if cwe:
+            lines.append(f"CWE: {cwe}")
+
+        owasp = _join_list(r["owasp"])
+        if owasp:
+            lines.append(f"OWASP: {owasp}")
+
+        if str(r["category"]).strip():
+            lines.append(f"Category: {r['category']}")
+
+        tech = _join_list(r["technology"])
+        if tech:
+            lines.append(f"Technology: {tech}")
+
+        if str(r["likelihood"]).strip():
+            lines.append(f"Likelihood: {r['likelihood']}")
+
+        if str(r["impact"]).strip():
+            lines.append(f"Impact: {r['impact']}")
+
+        if str(r["confidence"]).strip():
+            lines.append(f"Confidence: {r['confidence']}")
+
+        vclass = _join_list(r["vuln_class"])
+        if vclass:
+            lines.append(f"Class: {vclass}")
+
+        if str(r["source"]).strip():
+            lines.append(f"Source: {r['source']}")
+
+        if str(r["shortlink"]).strip():
+            lines.append(f"Shortlink: {r['shortlink']}")
+
+        refs = _as_list(r["references"])
+        refs = [str(x) for x in refs if str(x).strip()]
+        if refs:
+            lines.append("References:")
+            for ref in refs:
+                lines.append(f"  - {ref}")
+
+        if lines:
+            print("")
+            print("\n".join(lines))
+
+        print("")
+
+    return 0
 
 
 def process_findings(
@@ -92,26 +214,21 @@ def process_findings(
     severity_counts = {}
 
     raw_results = data.get("results", [])
-
-    # First pass: collect rows (unformatted), then optionally filter "multi" modes
     rows_raw = []
 
     for finding in raw_results:
         path = finding.get("path", "")
         path_norm = normalize_path(path)
 
-        # 1. Filter excluded files
         if is_test_file(path_norm):
             continue
 
         rule_name = finding.get("check_id", "UNKNOWN_RULE")
 
-        # Filter by specific file (substring match) if requested
         if only_file:
             if normalize_path(only_file) not in path_norm:
                 continue
 
-        # Filter by specific rule (substring match) if requested
         if only_rule:
             if str(only_rule) not in str(rule_name):
                 continue
@@ -134,49 +251,35 @@ def process_findings(
             "desc": msg,
         })
 
-    # Optional: keep only files that have multiple findings
     if only_multi_file:
         file_counts = {}
         for r in rows_raw:
             file_counts[r["path"]] = file_counts.get(r["path"], 0) + 1
         rows_raw = [r for r in rows_raw if file_counts.get(r["path"], 0) > 1]
 
-    # Optional: keep only rules that appear multiple times
     if only_multi_rule:
         rule_counts = {}
         for r in rows_raw:
             rule_counts[r["rule"]] = rule_counts.get(r["rule"], 0) + 1
         rows_raw = [r for r in rows_raw if rule_counts.get(r["rule"], 0) > 1]
 
-    # Stats and final rows
     for r in rows_raw:
         colored_key = f"{r['sev_color']}{COLOR_BOLD}{r['sev_label']}{COLOR_RESET}"
         severity_counts[colored_key] = severity_counts.get(colored_key, 0) + 1
         processed_rows.append(r)
 
-    # Sort alphabetically by path
     processed_rows.sort(key=lambda x: x["path"])
     return processed_rows, severity_counts
 
 
-def print_section_header(title):
-    print(f"{COLOR_YELLOW}[+] {title}{COLOR_RESET}")
-
-
 def build_table(rows, include_description=True):
-    """
-    Make the first column (File) fit nicely into terminal width.
-    We do manual truncation so the table never exceeds terminal width too much.
-    """
+    """Fit the File column to terminal width by truncating from the left."""
     term_w = get_terminal_width()
 
-    # Fixed-ish columns
-    sev_max = 8   # "CRITICAL" or our "MEDIUM" etc
-    line_max = 18 # "Col:999/Line:99999"
-    rule_max = 58 # tweakable
+    sev_max = 8
+    line_max = 18
+    rule_max = 58
 
-    # Basic separators and padding estimate
-    # tabulate adds spacing; we keep conservative margins
     sep_overhead = 3 * 4 + 8
 
     if include_description:
@@ -199,11 +302,7 @@ def build_table(rows, include_description=True):
         else:
             table_data.append([file_cell, r["line"], colored_sev, rule_cell])
 
-    if include_description:
-        headers = ["File", "Line", "Severity", "Rule", "Description"]
-    else:
-        headers = ["File", "Line", "Severity", "Rule"]
-
+    headers = ["File", "Line", "Severity", "Rule", "Description"] if include_description else ["File", "Line", "Severity", "Rule"]
     return headers, table_data
 
 
@@ -221,25 +320,17 @@ def main():
   python format-semgrep-json.py findings.json --rule insecure-document-method
   python format-semgrep-json.py findings.json --only-multi-file
   python format-semgrep-json.py findings.json --only-multi-rule
+  python format-semgrep-json.py findings.json --rule-doc insecure-document-method
         """
     )
     parser.add_argument("input_file", help="Path to the Semgrep JSON findings")
     parser.add_argument("--no-desc", action="store_true", help="Hide the description column for a cleaner display")
     parser.add_argument("--file", dest="only_file", default=None, help="Only show findings for paths containing this value")
     parser.add_argument("--rule", dest="only_rule", default=None, help="Only show findings for rules containing this value")
-    parser.add_argument(
-        "--only-multi-file",
-        action="store_true",
-        help="Only show findings for files that contain more than 1 finding",
-    )
-    parser.add_argument(
-        "--only-multi-rule",
-        action="store_true",
-        help="Only show findings for rules that appear more than 1 time",
-    )
+    parser.add_argument("--rule-doc", dest="rule_doc", default=None, help="Print full descriptions for rules whose id contains this value, then exit")
+    parser.add_argument("--only-multi-file", action="store_true", help="Only show findings for files that contain more than 1 finding")
+    parser.add_argument("--only-multi-rule", action="store_true", help="Only show findings for rules that appear more than 1 time")
     args = parser.parse_args()
-
-    include_description = not args.no_desc
 
     # 1. Load Data
     try:
@@ -247,6 +338,12 @@ def main():
             data = json.load(f)
     except Exception as e:
         sys.exit(f"{COLOR_RED}[!] Error reading file: {e}{COLOR_RESET}")
+
+    # Optional: print rule docs and exit
+    if args.rule_doc:
+        return print_rule_docs(data, args.rule_doc)
+
+    include_description = not args.no_desc
 
     # 2. Process Findings
     rows, stats = process_findings(
@@ -260,22 +357,21 @@ def main():
 
     # 3. Print Main Table
     print_section_header(f"Vulnerabilities ({len(rows)}):")
-
     headers, table_data = build_table(rows, include_description=include_description)
     print(tabulate(table_data, headers=headers))
     print("")
 
     # 4. Print Distribution
     print_section_header("Vulnerabilities severity distribution:")
-
     dist_data = []
     for sev_colored, count in stats.items():
         dist_data.append([sev_colored, count])
-
     dist_data.sort()
     print(tabulate(dist_data, headers=["Severity", "Vulnerability count"]))
     print("")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
